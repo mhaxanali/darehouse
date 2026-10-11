@@ -1,3 +1,4 @@
+
 from discord.ext import commands
 from typing import Callable
 import discord
@@ -6,7 +7,7 @@ import asyncio
 
 
 class TOD(commands.Cog):
-    """Contains the Truth and Dare game and relevant commands"""
+    """Contains the Truth and Dare game and relevant commands."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -16,7 +17,11 @@ class TOD(commands.Cog):
     # embeds / small helpers
     # ------------------------------------------------------------------
 
-    def build_lobby_embed(self, guild_id: int, title: str = "TOD Lobby") -> discord.Embed:
+    def build_lobby_embed(
+        self,
+        guild_id: int,
+        title: str = "TOD Lobby",
+    ) -> discord.Embed:
         game = self.games[guild_id]
         players_list = "\n".join(f"<@{pid}>" for pid in game["players"])
 
@@ -26,73 +31,121 @@ class TOD(commands.Cog):
             f"Run `+tod help` for commands."
         )
 
-        return discord.Embed(title=title, description=description, colour=discord.Colour.blue())
+        return discord.Embed(
+            title=title,
+            description=description,
+            colour=discord.Colour.blue(),
+        )
 
     def get_prompt(self, guild_id: int, choice: str) -> dict | None:
-        """Retrieves a prompt dict {'id','content'} for this guild, avoiding recent repeats."""
+        """Retrieve a prompt while avoiding recent repeats."""
         game = self.games[guild_id]
-        prompt = self.bot.connector.get_prompt(guild_id, choice, exclude_ids=set(game["last_prompts"]))
+
+        prompt = self.bot.connector.get_prompt(
+            guild_id,
+            choice,
+            exclude_ids=set(game["last_prompts"]),
+        )
 
         if prompt is None:
             return None
 
         if len(game["last_prompts"]) >= 25:
             game["last_prompts"].pop(0)
+
         game["last_prompts"].append(prompt["id"])
 
         return prompt
 
-    def check_message(self, guild_id: int, tod_channel: int | None, pid: int) -> Callable:
+    def check_message(
+        self,
+        guild_id: int,
+        tod_channel: int | None,
+        pid: int,
+    ) -> Callable:
         def inner(msg: discord.Message) -> bool:
             if msg.guild is None or msg.guild.id != guild_id:
                 return False
+
             if tod_channel is not None and msg.channel.id != tod_channel:
                 return False
+
             return (
-                msg.author.id == pid and
-                msg.content.lower() in ["truth", "dare", "t", "d"]
+                msg.author.id == pid
+                and msg.content.lower() in ["truth", "dare", "t", "d"]
             )
+
         return inner
 
-    async def run_turn(self, ctx: commands.Context, player: int) -> None:
+    async def run_turn(
+        self,
+        ctx: commands.Context,
+        player: int,
+    ) -> None:
         guild_id = ctx.guild.id
         game = self.games[guild_id]
         cfg = self.bot.connector.get_guild_config(guild_id)
 
-        await ctx.send(f"<@{player}> It's your turn. Truth or Dare (30s).")
+        # Clear the previous turn's choice before starting a new turn.
+        game["last_choice"] = None
+
+        await ctx.send(
+            f"<@{player}> It's your turn. Truth or Dare (30s)."
+        )
 
         try:
             game["waiting_for_response"] = True
+
             msg = await self.bot.wait_for(
                 "message",
-                check=self.check_message(guild_id, cfg["tod_channel"], player),
-                timeout=30
+                check=self.check_message(
+                    guild_id,
+                    cfg["tod_channel"],
+                    player,
+                ),
+                timeout=30,
             )
 
+            # The game may have been ended while waiting.
             if guild_id not in self.games:
                 return
 
-            choice = "truth" if msg.content.lower() in ("t", "truth") else "dare"
+            choice = (
+                "truth"
+                if msg.content.lower() in ("t", "truth")
+                else "dare"
+            )
+
+            game["last_choice"] = choice
 
             owner_member = ctx.guild.get_member(game["session_owner"])
             player_member = ctx.guild.get_member(player)
 
             prompt = self.get_prompt(guild_id, choice)
+
             if prompt is None:
                 await ctx.send("No prompts are available right now.")
                 return
 
-            embed = discord.Embed(colour=discord.Colour.blue(), title=prompt["content"])
+            embed = discord.Embed(
+                colour=discord.Colour.blue(),
+                title=prompt["content"],
+            )
 
             embed.set_author(
                 name=player_member.name if player_member else "Player",
-                icon_url=player_member.display_avatar.url if player_member else None
+                icon_url=(
+                    player_member.display_avatar.url
+                    if player_member
+                    else None
+                ),
             )
 
             embed.set_footer(
                 text=(
                     f"ID: #{prompt['id']} | TYPE: {choice.upper()} | "
-                    f"Session Owner: {owner_member.name if owner_member else 'Unknown'}"
+                    f"Session Owner: "
+                    f"{owner_member.name if owner_member else 'Unknown'}"
                 )
             )
 
@@ -100,13 +153,73 @@ class TOD(commands.Cog):
 
         except asyncio.TimeoutError:
             await ctx.send(f"<@{player}> took too long.")
+
         finally:
             if guild_id in self.games:
                 self.games[guild_id]["waiting_for_response"] = False
-        return
 
-    def remove_player_turn(self, guild_id: int, user_id: int) -> None:
+    async def reroll_prompt(
+        self,
+        ctx: commands.Context,
+        player: int,
+    ) -> None:
+        """Generate another prompt of the current turn's selected type."""
+        guild_id = ctx.guild.id
+
+        # Check before accessing the game dictionary.
+        game = self.games.get(guild_id)
+
+        if game is None:
+            return
+
+        choice = game.get("last_choice")
+
+        if choice not in ("truth", "dare"):
+            await ctx.send(
+                "No prompt has been selected for the current turn."
+            )
+            return
+
+        owner_member = ctx.guild.get_member(game["session_owner"])
+        player_member = ctx.guild.get_member(player)
+
+        prompt = self.get_prompt(guild_id, choice)
+
+        if prompt is None:
+            await ctx.send("No prompts are available right now.")
+            return
+
+        embed = discord.Embed(
+            colour=discord.Colour.blue(),
+            title=prompt["content"],
+        )
+
+        embed.set_author(
+            name=player_member.name if player_member else "Player",
+            icon_url=(
+                player_member.display_avatar.url
+                if player_member
+                else None
+            ),
+        )
+
+        embed.set_footer(
+            text=(
+                f"ID: #{prompt['id']} | TYPE: {choice.upper()} | "
+                f"Session Owner: "
+                f"{owner_member.name if owner_member else 'Unknown'}"
+            )
+        )
+
+        await ctx.send(embed=embed)
+
+    def remove_player_turn(
+        self,
+        guild_id: int,
+        user_id: int,
+    ) -> None:
         game = self.games[guild_id]
+
         if "turn_order" in game:
             if user_id in game["turn_order"]:
                 removed_index = game["turn_order"].index(user_id)
@@ -115,16 +228,21 @@ class TOD(commands.Cog):
                 if game["turn_order"]:
                     if removed_index <= game["turn_index"]:
                         game["turn_index"] -= 1
+
                     game["turn_index"] %= len(game["turn_order"])
                 else:
                     game["turn_index"] = 0
-        return
 
     # ------------------------------------------------------------------
     # pagination
     # ------------------------------------------------------------------
 
-    def _paginate_prompt_group(self, title: str, prompts: list[dict], guild_id: int) -> list[discord.Embed]:
+    def _paginate_prompt_group(
+        self,
+        title: str,
+        prompts: list[dict],
+        guild_id: int,
+    ) -> list[discord.Embed]:
         if not prompts:
             return []
 
@@ -133,43 +251,81 @@ class TOD(commands.Cog):
         pages = []
 
         for page_num in range(total_pages):
-            chunk = prompts[page_num * per_page: page_num * per_page + per_page]
-            lines = []
-            for p in chunk:
-                banned = self.bot.connector.is_prompt_banned(guild_id, p["id"])
-                mark = "❌" if banned else "✅"
-                lines.append(f"{mark} `#{p['id']}` {p['content']}")
+            chunk = prompts[
+                page_num * per_page: page_num * per_page + per_page
+            ]
 
-            pages.append(discord.Embed(
-                title=f"{title} (Page {page_num + 1}/{total_pages})",
-                description="\n".join(lines),
-                colour=discord.Colour.dark_orange()
-            ))
+            lines = []
+
+            for prompt in chunk:
+                banned = self.bot.connector.is_prompt_banned(
+                    guild_id,
+                    prompt["id"],
+                )
+
+                mark = "❌" if banned else "✅"
+                lines.append(
+                    f"{mark} `#{prompt['id']}` {prompt['content']}"
+                )
+
+            pages.append(
+                discord.Embed(
+                    title=(
+                        f"{title} "
+                        f"(Page {page_num + 1}/{total_pages})"
+                    ),
+                    description="\n".join(lines),
+                    colour=discord.Colour.dark_orange(),
+                )
+            )
 
         return pages
 
-    def build_prompt_list_pages(self, ctx: commands.Context, prompt_type: str) -> list[discord.Embed]:
+    def build_prompt_list_pages(
+        self,
+        ctx: commands.Context,
+        prompt_type: str,
+    ) -> list[discord.Embed]:
         guild_id = ctx.guild.id
         label = "Truths" if prompt_type == "truth" else "Dares"
 
-        default_prompts = self.bot.connector.list_default_prompts(prompt_type)
-        guild_prompts = self.bot.connector.list_guild_prompts(guild_id, prompt_type)
+        default_prompts = self.bot.connector.list_default_prompts(
+            prompt_type
+        )
+        guild_prompts = self.bot.connector.list_guild_prompts(
+            guild_id,
+            prompt_type,
+        )
 
         pages = (
-            self._paginate_prompt_group(f"Default {label}", default_prompts, guild_id)
-            + self._paginate_prompt_group(f"Server {label}", guild_prompts, guild_id)
+            self._paginate_prompt_group(
+                f"Default {label}",
+                default_prompts,
+                guild_id,
+            )
+            + self._paginate_prompt_group(
+                f"Server {label}",
+                guild_prompts,
+                guild_id,
+            )
         )
 
         if not pages:
-            pages = [discord.Embed(
-                title=label,
-                description="No prompts found.",
-                colour=discord.Colour.dark_orange()
-            )]
+            pages = [
+                discord.Embed(
+                    title=label,
+                    description="No prompts found.",
+                    colour=discord.Colour.dark_orange(),
+                )
+            ]
 
         return pages
 
-    async def paginate(self, ctx: commands.Context, pages: list[discord.Embed]) -> None:
+    async def paginate(
+        self,
+        ctx: commands.Context,
+        pages: list[discord.Embed],
+    ) -> None:
         if len(pages) == 1:
             await ctx.send(embed=pages[0])
             return
@@ -181,7 +337,10 @@ class TOD(commands.Cog):
         for emoji in controls:
             await message.add_reaction(emoji)
 
-        def check(reaction: discord.Reaction, user: discord.User) -> bool:
+        def check(
+            reaction: discord.Reaction,
+            user: discord.User,
+        ) -> bool:
             return (
                 user.id == ctx.author.id
                 and reaction.message.id == message.id
@@ -190,27 +349,38 @@ class TOD(commands.Cog):
 
         while True:
             try:
-                reaction, user = await self.bot.wait_for("reaction_add", timeout=60.0, check=check)
+                reaction, user = await self.bot.wait_for(
+                    "reaction_add",
+                    timeout=60.0,
+                    check=check,
+                )
+
             except asyncio.TimeoutError:
                 try:
                     await message.clear_reactions()
                 except (discord.Forbidden, discord.NotFound):
                     pass
+
                 return
 
             emoji = str(reaction.emoji)
+
             if emoji == "▶️":
                 index = (index + 1) % len(pages)
+
             elif emoji == "◀️":
                 index = (index - 1) % len(pages)
+
             elif emoji == "⏹️":
                 try:
                     await message.clear_reactions()
                 except (discord.Forbidden, discord.NotFound):
                     pass
+
                 return
 
             await message.edit(embed=pages[index])
+
             try:
                 await message.remove_reaction(reaction.emoji, user)
             except (discord.Forbidden, discord.NotFound):
@@ -231,10 +401,13 @@ class TOD(commands.Cog):
             await ctx.send(
                 embed=discord.Embed(
                     title="Failed to Run Command",
-                    description=f"Can only run commands in <#{tod_channel}>",
-                    colour=discord.Colour.red()
+                    description=(
+                        f"Can only run commands in <#{tod_channel}>"
+                    ),
+                    colour=discord.Colour.red(),
                 )
             )
+
             return False
 
         return True
@@ -245,7 +418,7 @@ class TOD(commands.Cog):
 
     @commands.group(name="tod", invoke_without_command=True)
     async def tod(self, ctx: commands.Context) -> None:
-        """The command group for TOD related commands, runs when no subcommand is invoked."""
+        """Create a TOD lobby."""
         async with ctx.typing():
             guild_id = ctx.guild.id
 
@@ -254,7 +427,7 @@ class TOD(commands.Cog):
                     embed=discord.Embed(
                         title="Failed",
                         description="A TOD game is already running.",
-                        colour=discord.Colour.red()
+                        colour=discord.Colour.red(),
                     )
                 )
                 return
@@ -264,6 +437,7 @@ class TOD(commands.Cog):
                 "players": [ctx.author.id],
                 "message": None,
                 "last_prompts": [],
+                "last_choice": None,
                 "waiting_for_response": False,
             }
 
@@ -271,15 +445,19 @@ class TOD(commands.Cog):
             tod_role = cfg["tod_role"]
             ping = f"<@&{tod_role}>" if tod_role else ""
 
-            embed = self.build_lobby_embed(guild_id, "TOD Lobby Created")
+            embed = self.build_lobby_embed(
+                guild_id,
+                "TOD Lobby Created",
+            )
+
             self.games[guild_id]["message"] = await ctx.send(
                 f"|| {ping} ||" if ping else None,
-                embed=embed
+                embed=embed,
             )
 
     @tod.command(name="help")
     async def tod_help(self, ctx: commands.Context) -> None:
-        """Command to send the help embed with all the available commands."""
+        """Show available TOD commands."""
         async with ctx.typing():
             await ctx.send(
                 embed=discord.Embed(
@@ -290,35 +468,36 @@ class TOD(commands.Cog):
                         "`+tod start` - start game (session owner only)\n"
                         "`+tod end` - end game (session owner/admin only)\n"
                         "`+tod next` - next player's turn (session owner only)\n"
-                        "`+tod owner <user>` - transfer the session ownership (session owner only)\n"
-                        "`+tod room` - view the details about the current TOD session\n"
-                        "`+tod kick <user>` - remove a player from the tod session (session owner only)\n"
+                        "`+tod owner <user>` - transfer session ownership\n"
+                        "`+tod room` - view current TOD session details\n"
+                        "`+tod kick <user>` - remove a player\n"
+                        "`+tod reroll` - reroll the current prompt\n"
                         "`+tod truths` - list available truths\n"
                         "`+tod dares` - list available dares\n"
-                        "`+tod ban <id>` - ban a prompt for this server (manage server)\n"
-                        "`+tod unban <id>` - unban a prompt for this server (manage server)\n"
-                        "`+tod add truth <prompt>` - add a custom truth (manage server)\n"
-                        "`+tod add dare <prompt>` - add a custom dare (manage server)"
+                        "`+tod ban <id>` - ban a prompt (manage server)\n"
+                        "`+tod unban <id>` - unban a prompt (manage server)\n"
+                        "`+tod add truth <prompt>` - add a custom truth\n"
+                        "`+tod add dare <prompt>` - add a custom dare"
                     ),
-                    colour=discord.Colour.blue()
+                    colour=discord.Colour.blue(),
                 )
             )
-            return
 
     @tod.command(name="room")
     async def tod_room(self, ctx: commands.Context) -> None:
-        """Command to view details about the current TOD session."""
+        """View details about the current TOD session."""
         async with ctx.typing():
             guild_id = ctx.guild.id
+
             if guild_id not in self.games:
                 await ctx.send("No TOD game is running.")
                 return
+
             await ctx.send(embed=self.build_lobby_embed(guild_id))
-            return
 
     @tod.command(name="next")
     async def tod_next(self, ctx: commands.Context) -> None:
-        """Command to advance player turns."""
+        """Advance to the next player's turn."""
         async with ctx.typing():
             guild_id = ctx.guild.id
             game = self.games.get(guild_id)
@@ -326,25 +505,36 @@ class TOD(commands.Cog):
             if game is None:
                 await ctx.send("No active game.")
                 return
+
             if ctx.author.id != game["session_owner"]:
-                await ctx.send("Only session owner can advance turns.")
-                return
-            if "turn_order" not in game or not game["turn_order"]:
-                await ctx.send("Game hasn't been started properly.")
-                return
-            if game["waiting_for_response"]:
-                await ctx.send("Already waiting for a player's response.")
+                await ctx.send(
+                    "Only session owner can advance turns."
+                )
                 return
 
-            game["turn_index"] = (game["turn_index"] + 1) % len(game["turn_order"])
+            if not game.get("turn_order"):
+                await ctx.send(
+                    "Game hasn't been started properly."
+                )
+                return
+
+            if game["waiting_for_response"]:
+                await ctx.send(
+                    "Already waiting for a player's response."
+                )
+                return
+
+            game["turn_index"] = (
+                game["turn_index"] + 1
+            ) % len(game["turn_order"])
+
             player = game["turn_order"][game["turn_index"]]
 
             await self.run_turn(ctx, player)
-            return
 
     @tod.command(name="start")
     async def tod_start(self, ctx: commands.Context) -> None:
-        """Command to start the TOD game if a session is available."""
+        """Start the TOD game."""
         async with ctx.typing():
             guild_id = ctx.guild.id
             game = self.games.get(guild_id)
@@ -352,12 +542,15 @@ class TOD(commands.Cog):
             if game is None:
                 await ctx.send("No available room.")
                 return
+
             if ctx.author.id != game["session_owner"]:
                 await ctx.send("Only session owner can start.")
                 return
+
             if len(game["players"]) < 1:
                 await ctx.send("Need at least 1 player.")
                 return
+
             if game.get("turn_order"):
                 await ctx.send("Game has already been started.")
                 return
@@ -367,12 +560,12 @@ class TOD(commands.Cog):
             game["turn_index"] = 0
 
             player = game["turn_order"][game["turn_index"]]
+
             await self.run_turn(ctx, player)
-            return
 
     @tod.command(name="end")
     async def tod_end(self, ctx: commands.Context) -> None:
-        """Command to end a running TOD session."""
+        """End the running TOD session."""
         async with ctx.typing():
             guild_id = ctx.guild.id
             game = self.games.get(guild_id)
@@ -385,24 +578,27 @@ class TOD(commands.Cog):
             is_admin = ctx.author.guild_permissions.administrator
 
             if not (is_owner or is_admin):
-                await ctx.send("You don't have permission to end this game.")
+                await ctx.send(
+                    "You don't have permission to end this game."
+                )
                 return
 
-            await game["message"].edit(
-                embed=discord.Embed(
-                    title="Game Ended",
-                    description="TOD session has been ended.",
-                    colour=discord.Colour.red()
+            if game["message"] is not None:
+                await game["message"].edit(
+                    embed=discord.Embed(
+                        title="Game Ended",
+                        description="TOD session has been ended.",
+                        colour=discord.Colour.red(),
+                    )
                 )
-            )
 
             del self.games[guild_id]
+
             await ctx.send("Game ended.")
-            return
 
     @tod.command(name="join")
     async def tod_join(self, ctx: commands.Context) -> None:
-        """Command to join a running TOD session."""
+        """Join a running TOD session."""
         async with ctx.typing():
             guild_id = ctx.guild.id
             game = self.games.get(guild_id)
@@ -410,21 +606,28 @@ class TOD(commands.Cog):
             if game is None:
                 await ctx.send("No TOD game is running.")
                 return
+
             if ctx.author.id in game["players"]:
                 await ctx.send("You are already in the game.")
                 return
 
             game["players"].append(ctx.author.id)
-            if "turn_order" in game and ctx.author.id not in game["turn_order"]:
+
+            if (
+                "turn_order" in game
+                and ctx.author.id not in game["turn_order"]
+            ):
                 game["turn_order"].append(ctx.author.id)
 
-            await game["message"].edit(embed=self.build_lobby_embed(guild_id))
+            await game["message"].edit(
+                embed=self.build_lobby_embed(guild_id)
+            )
+
             await ctx.send(f"{ctx.author.mention} joined.")
-            return
 
     @tod.command(name="leave")
     async def tod_leave(self, ctx: commands.Context) -> None:
-        """Command to leave a running TOD session."""
+        """Leave a running TOD session."""
         async with ctx.typing():
             guild_id = ctx.guild.id
             game = self.games.get(guild_id)
@@ -432,23 +635,34 @@ class TOD(commands.Cog):
             if game is None:
                 await ctx.send("No TOD game is running.")
                 return
+
             if ctx.author.id not in game["players"]:
                 await ctx.send("You're not in this game.")
                 return
+
             if ctx.author.id == game["session_owner"]:
-                await ctx.send("Session owner cannot leave the game.")
+                await ctx.send(
+                    "Session owner cannot leave the game."
+                )
                 return
 
             game["players"].remove(ctx.author.id)
+
             self.remove_player_turn(guild_id, ctx.author.id)
 
-            await game["message"].edit(embed=self.build_lobby_embed(guild_id))
+            await game["message"].edit(
+                embed=self.build_lobby_embed(guild_id)
+            )
+
             await ctx.send(f"{ctx.author.mention} left.")
-            return
 
     @tod.command(name="owner")
-    async def transfer_ownership(self, ctx: commands.Context, user: discord.Member = None) -> None:
-        """Command to transfer ownership of a running TOD session."""
+    async def transfer_ownership(
+        self,
+        ctx: commands.Context,
+        user: discord.Member = None,
+    ) -> None:
+        """Transfer session ownership."""
         async with ctx.typing():
             guild_id = ctx.guild.id
             game = self.games.get(guild_id)
@@ -456,27 +670,46 @@ class TOD(commands.Cog):
             if game is None:
                 await ctx.send(":x: There is no running game.")
                 return
+
             if ctx.author.id != game["session_owner"]:
-                await ctx.send(":x: Only the session owner can run this command.")
+                await ctx.send(
+                    ":x: Only the session owner can run this command."
+                )
                 return
+
             if user is None:
                 await ctx.send(":x: Must mention a user.")
                 return
+
             if user.id not in game["players"]:
-                await ctx.send(":x: User must be a player in the running game.")
+                await ctx.send(
+                    ":x: User must be a player in the running game."
+                )
                 return
+
             if user.id == game["session_owner"]:
-                await ctx.send(":x: That user is already the session owner.")
+                await ctx.send(
+                    ":x: That user is already the session owner."
+                )
                 return
 
             game["session_owner"] = user.id
-            await game["message"].edit(embed=self.build_lobby_embed(guild_id))
-            await ctx.send(f"Ownership transferred to <@{user.id}>.")
-            return
+
+            await game["message"].edit(
+                embed=self.build_lobby_embed(guild_id)
+            )
+
+            await ctx.send(
+                f"Ownership transferred to <@{user.id}>."
+            )
 
     @tod.command(name="kick")
-    async def tod_kick(self, ctx: commands.Context, user: discord.Member = None) -> None:
-        """Command to remove a player from a running TOD session."""
+    async def tod_kick(
+        self,
+        ctx: commands.Context,
+        user: discord.Member = None,
+    ) -> None:
+        """Remove a player from a running TOD session."""
         async with ctx.typing():
             guild_id = ctx.guild.id
             game = self.games.get(guild_id)
@@ -484,25 +717,40 @@ class TOD(commands.Cog):
             if game is None:
                 await ctx.send(":x: There is no running game.")
                 return
+
             if ctx.author.id != game["session_owner"]:
-                await ctx.send(":x: Only the session owner can run this command.")
+                await ctx.send(
+                    ":x: Only the session owner can run this command."
+                )
                 return
+
             if user is None:
                 await ctx.send(":x: Must mention a user.")
                 return
+
             if user.id not in game["players"]:
-                await ctx.send(":x: User must be a player in the running game.")
+                await ctx.send(
+                    ":x: User must be a player in the running game."
+                )
                 return
+
             if user.id == game["session_owner"]:
-                await ctx.send(":x: Session owner cannot be kicked.")
+                await ctx.send(
+                    ":x: Session owner cannot be kicked."
+                )
                 return
 
             game["players"].remove(user.id)
+
             self.remove_player_turn(guild_id, user.id)
 
-            await game["message"].edit(embed=self.build_lobby_embed(guild_id))
-            await ctx.send(f"<@{user.id}> has been removed from running game.")
-            return
+            await game["message"].edit(
+                embed=self.build_lobby_embed(guild_id)
+            )
+
+            await ctx.send(
+                f"<@{user.id}> has been removed from running game."
+            )
 
     # ------------------------------------------------------------------
     # prompt browsing / management
@@ -510,92 +758,204 @@ class TOD(commands.Cog):
 
     @tod.command(name="truths")
     async def tod_truths(self, ctx: commands.Context) -> None:
-        """Lists all available truths for this server, paginated."""
+        """List available truths."""
         pages = self.build_prompt_list_pages(ctx, "truth")
         await self.paginate(ctx, pages)
 
     @tod.command(name="dares")
     async def tod_dares(self, ctx: commands.Context) -> None:
-        """Lists all available dares for this server, paginated."""
+        """List available dares."""
         pages = self.build_prompt_list_pages(ctx, "dare")
         await self.paginate(ctx, pages)
 
     @tod.command(name="ban")
     @commands.has_permissions(manage_guild=True)
-    async def tod_ban(self, ctx: commands.Context, prompt_id: int) -> None:
-        """Bans a prompt from this server's pool."""
+    async def tod_ban(
+        self,
+        ctx: commands.Context,
+        prompt_id: int,
+    ) -> None:
+        """Ban a prompt from this server's pool."""
         connector = self.bot.connector
 
-        if not connector.is_prompt_visible_to_guild(ctx.guild.id, prompt_id):
-            await ctx.send(embed=discord.Embed(
-                title="Error", description=f"No prompt found with ID `#{prompt_id}`.",
-                colour=discord.Colour.red()
-            ))
+        if not connector.is_prompt_visible_to_guild(
+            ctx.guild.id,
+            prompt_id,
+        ):
+            await ctx.send(
+                embed=discord.Embed(
+                    title="Error",
+                    description=f"No prompt found with ID `#{prompt_id}`.",
+                    colour=discord.Colour.red(),
+                )
+            )
             return
 
         if connector.is_prompt_banned(ctx.guild.id, prompt_id):
-            await ctx.send(embed=discord.Embed(
-                title="Error", description=f"Prompt `#{prompt_id}` is already banned.",
-                colour=discord.Colour.red()
-            ))
+            await ctx.send(
+                embed=discord.Embed(
+                    title="Error",
+                    description=f"Prompt `#{prompt_id}` is already banned.",
+                    colour=discord.Colour.red(),
+                )
+            )
             return
 
-        await connector.ban_prompt(ctx.guild.id, prompt_id, banned_by=ctx.author.id)
-        await ctx.send(embed=discord.Embed(
-            title="Success", description=f"Prompt `#{prompt_id}` banned for this server.",
-            colour=discord.Colour.green()
-        ))
+        await connector.ban_prompt(
+            ctx.guild.id,
+            prompt_id,
+            banned_by=ctx.author.id,
+        )
+
+        await ctx.send(
+            embed=discord.Embed(
+                title="Success",
+                description=(
+                    f"Prompt `#{prompt_id}` banned for this server."
+                ),
+                colour=discord.Colour.green(),
+            )
+        )
 
     @tod.command(name="unban")
     @commands.has_permissions(manage_guild=True)
-    async def tod_unban(self, ctx: commands.Context, prompt_id: int) -> None:
-        """Unbans a prompt for this server's pool."""
+    async def tod_unban(
+        self,
+        ctx: commands.Context,
+        prompt_id: int,
+    ) -> None:
+        """Unban a prompt for this server's pool."""
         connector = self.bot.connector
 
-        if not connector.is_prompt_visible_to_guild(ctx.guild.id, prompt_id):
-            await ctx.send(embed=discord.Embed(
-                title="Error", description=f"No prompt found with ID `#{prompt_id}`.",
-                colour=discord.Colour.red()
-            ))
+        if not connector.is_prompt_visible_to_guild(
+            ctx.guild.id,
+            prompt_id,
+        ):
+            await ctx.send(
+                embed=discord.Embed(
+                    title="Error",
+                    description=f"No prompt found with ID `#{prompt_id}`.",
+                    colour=discord.Colour.red(),
+                )
+            )
             return
 
         if not connector.is_prompt_banned(ctx.guild.id, prompt_id):
-            await ctx.send(embed=discord.Embed(
-                title="Error", description=f"Prompt `#{prompt_id}` is not banned.",
-                colour=discord.Colour.red()
-            ))
+            await ctx.send(
+                embed=discord.Embed(
+                    title="Error",
+                    description=f"Prompt `#{prompt_id}` is not banned.",
+                    colour=discord.Colour.red(),
+                )
+            )
             return
 
         await connector.unban_prompt(ctx.guild.id, prompt_id)
-        await ctx.send(embed=discord.Embed(
-            title="Success", description=f"Prompt `#{prompt_id}` unbanned for this server.",
-            colour=discord.Colour.green()
-        ))
+
+        await ctx.send(
+            embed=discord.Embed(
+                title="Success",
+                description=(
+                    f"Prompt `#{prompt_id}` unbanned for this server."
+                ),
+                colour=discord.Colour.green(),
+            )
+        )
 
     @tod.group(name="add", invoke_without_command=True)
     async def tod_add(self, ctx: commands.Context) -> None:
-        """Shows add-related subcommands."""
+        """Show add-related subcommands."""
         await ctx.send_help(ctx.command)
 
     @tod_add.command(name="truth")
     @commands.has_permissions(manage_guild=True)
-    async def add_truth(self, ctx: commands.Context, *, prompt: str) -> None:
-        """Adds a custom truth for this server."""
-        new_id = await self.bot.connector.add_prompt(ctx.guild.id, "truth", prompt, added_by=ctx.author.id)
-        await ctx.send(embed=discord.Embed(
-            title="Success", description=f"Truth added with ID `#{new_id}`.",
-            colour=discord.Colour.green()
-        ))
+    async def add_truth(
+        self,
+        ctx: commands.Context,
+        *,
+        prompt: str,
+    ) -> None:
+        """Add a custom truth for this server."""
+        new_id = await self.bot.connector.add_prompt(
+            ctx.guild.id,
+            "truth",
+            prompt,
+            added_by=ctx.author.id,
+        )
+
+        await ctx.send(
+            embed=discord.Embed(
+                title="Success",
+                description=f"Truth added with ID `#{new_id}`.",
+                colour=discord.Colour.green(),
+            )
+        )
 
     @tod_add.command(name="dare")
     @commands.has_permissions(manage_guild=True)
-    async def add_dare(self, ctx: commands.Context, *, prompt: str) -> None:
-        """Adds a custom dare for this server."""
-        new_id = await self.bot.connector.add_prompt(ctx.guild.id, "dare", prompt, added_by=ctx.author.id)
-        await ctx.send(embed=discord.Embed(
-            title="Success", description=f"Dare added with ID `#{new_id}`.",
-            colour=discord.Colour.green()
-        ))
+    async def add_dare(
+        self,
+        ctx: commands.Context,
+        *,
+        prompt: str,
+    ) -> None:
+        """Add a custom dare for this server."""
+        new_id = await self.bot.connector.add_prompt(
+            ctx.guild.id,
+            "dare",
+            prompt,
+            added_by=ctx.author.id,
+        )
+
+        await ctx.send(
+            embed=discord.Embed(
+                title="Success",
+                description=f"Dare added with ID `#{new_id}`.",
+                colour=discord.Colour.green(),
+            )
+        )
+
+    # ------------------------------------------------------------------
+    # reroll
+    # ------------------------------------------------------------------
+
+    @tod.command(name="reroll")
+    async def reroll(self, ctx: commands.Context) -> None:
+        """Reroll the selected prompt for the current player."""
+        guild_id = ctx.guild.id
+        game = self.games.get(guild_id)
+
+        if game is None:
+            await ctx.send("No active game.")
+            return
+
+        if ctx.author.id != game["session_owner"]:
+            await ctx.send(
+                "Only the session owner can reroll prompts."
+            )
+            return
+
+        if not game.get("turn_order"):
+            await ctx.send(
+                "Game hasn't been started properly."
+            )
+            return
+
+        if game["waiting_for_response"]:
+            await ctx.send(
+                "The current player hasn't selected Truth or Dare yet."
+            )
+            return
+
+        if game.get("last_choice") not in ("truth", "dare"):
+            await ctx.send(
+                "No prompt has been selected for the current turn."
+            )
+            return
+
+        player = game["turn_order"][game["turn_index"]]
+
+        await self.reroll_prompt(ctx, player)
 
 
 async def setup(bot: commands.Bot):
