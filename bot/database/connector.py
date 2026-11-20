@@ -23,7 +23,6 @@ class Connector:
         self.db: aiosqlite.Connection | None = None
 
         self._guild_config_cache: dict[int, dict] = {}
-        self._blacklist_cache: dict[int, dict] = {}
 
         # {guild_id_or_None: {"truth": [{"id", "content"}, ...], "dare": [...]}}
         self._prompts_cache: dict[int | None, dict[str, list[dict]]] = {}
@@ -44,7 +43,6 @@ class Connector:
         await self._init_schema()
         await self._run_migrations()
         await self._load_guild_config_cache()
-        await self._load_blacklist_cache()
         await self._sync_prompts_from_json()
         await self._load_prompts_cache()
         await self._load_prompt_bans_cache()
@@ -99,8 +97,6 @@ class Connector:
             "enabled_cogs": [],
             "tod_channel": None,
             "tod_role": None,
-            "enable_mod_logs": False,
-            "mod_logs_channel": None,
             "is_locked": False,
             "is_hard_locked": False,
         }
@@ -109,7 +105,7 @@ class Connector:
         self._guild_config_cache.clear()
         async with self.db.execute(
             """SELECT guild_id, enabled_cogs, tod_channel, tod_role,
-                      enable_mod_logs, mod_logs_channel, is_locked, is_hard_locked
+                      is_locked, is_hard_locked
                FROM guild_config"""
         ) as cursor:
             async for row in cursor:
@@ -117,8 +113,6 @@ class Connector:
                     "enabled_cogs": json.loads(row["enabled_cogs"] or "[]"),
                     "tod_channel": row["tod_channel"],
                     "tod_role": row["tod_role"],
-                    "enable_mod_logs": bool(row["enable_mod_logs"]),
-                    "mod_logs_channel": row["mod_logs_channel"],
                     "is_locked": bool(row["is_locked"]),
                     "is_hard_locked": bool(row["is_hard_locked"]),
                 }
@@ -127,8 +121,8 @@ class Connector:
         await self.db.execute(
             """INSERT INTO guild_config
                    (guild_id, enabled_cogs, tod_channel, tod_role,
-                    enable_mod_logs, mod_logs_channel, is_locked, is_hard_locked)
-               VALUES (?, '[]', NULL, NULL, 0, NULL, 0, 0)
+                    is_locked, is_hard_locked)
+               VALUES (?, '[]', NULL, NULL, 0, 0)
                ON CONFLICT(guild_id) DO NOTHING""",
             (guild_id,)
         )
@@ -167,22 +161,6 @@ class Connector:
         )
         await self.db.commit()
         self._guild_config_cache.setdefault(guild_id, self._default_guild_config())["enabled_cogs"] = enabled_cogs
-
-    async def set_enable_mod_logs(self, guild_id: int, enabled: bool):
-        await self.db.execute(
-            "UPDATE guild_config SET enable_mod_logs = ? WHERE guild_id = ?",
-            (int(enabled), guild_id)
-        )
-        await self.db.commit()
-        self._guild_config_cache.setdefault(guild_id, self._default_guild_config())["enable_mod_logs"] = enabled
-
-    async def set_mod_logs_channel(self, guild_id: int, channel_id: int | None):
-        await self.db.execute(
-            "UPDATE guild_config SET mod_logs_channel = ? WHERE guild_id = ?",
-            (channel_id, guild_id)
-        )
-        await self.db.commit()
-        self._guild_config_cache.setdefault(guild_id, self._default_guild_config())["mod_logs_channel"] = channel_id
 
     async def set_locked(self, guild_id: int, locked: bool):
         await self.db.execute(
