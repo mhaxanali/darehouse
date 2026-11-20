@@ -20,7 +20,7 @@ source .venv/bin/activate # for Linux / MacOS
 ./.venv/Scripts/Activate.ps1 # for Windows (Powershell)
 pip install -r requirements.txt
 ```
-Create `.env` using the template @ `.env.example` and fill in values. \
+Create `.env` using the template @ `.env.example` and fill in values.
 ### 2. Adding Prompts
 To add Truth or Dare prompts put them in `bot/resources/data/` with truths in `bot/resources/data/truths.json` and dares in `bot/resources/data/dares.json`. Use JSON list syntax. \
 These prompts will be added to the database on bot startup.
